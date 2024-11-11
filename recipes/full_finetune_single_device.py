@@ -27,6 +27,8 @@ from torchtune.training.lr_schedulers import get_lr
 
 from tqdm import tqdm
 
+# intel amx
+import intel_extension_for_pytorch as ipex
 
 log = utils.get_logger("DEBUG")
 
@@ -284,6 +286,9 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
                 ckpt_dict[training.OPT_KEY] if self._resume_from_checkpoint else None
             ),
         )
+
+        # intel amx
+        self._model, self._optimizer = ipex.optimize(self._model, optimizer=self._optimizer)
 
         # initialize loss
         self._loss_fn = config.instantiate(cfg.loss)
@@ -655,6 +660,7 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
             log.info(
                 "NOTE: torch.compile is enabled and model is compiled in first forward. Expect a relatively slow first iteration."
             )
+
         # zero out the gradients before starting training
         if not self._optimizer_in_bwd:
             self._optimizer.zero_grad()

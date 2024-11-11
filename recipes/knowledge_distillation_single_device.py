@@ -35,6 +35,9 @@ from torchtune.training import DummyProfiler, PROFILER_KEY
 
 from tqdm import tqdm
 
+# intel amx
+import intel_extension_for_pytorch as ipex
+
 log = utils.get_logger("DEBUG")
 
 
@@ -260,6 +263,10 @@ class KDRecipeSingleDevice(FTRecipeInterface):
                 else None
             ),
         )
+
+        # intel amx
+        self._teacher_model = ipex.optimize(self._teacher_model)
+        self._model, self._optimizer = ipex.optimize(self._model, optimizer=self._optimizer)
 
         # initialize loss
         self._loss_fn = config.instantiate(cfg.loss)
