@@ -4,6 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+import pickle
 import sys
 import time
 from functools import partial
@@ -12,6 +13,9 @@ from warnings import warn
 
 import torch
 from omegaconf import DictConfig, ListConfig
+
+
+import hashlib
 
 from torch import nn
 from torch.optim import Optimizer
@@ -192,6 +196,60 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
         self.max_steps_per_epoch = cfg.max_steps_per_epoch
         self.global_step = 0
 
+        # Initialize PoT tracking
+        self._pot_data = {
+            "random_seed": cfg.seed,
+            "initial_model_weights_md5": self._hash_model_weights(),
+            "train_data_md5": self._hash_train_data(),
+            "epochs": {},
+        }
+        self._hash_json_name = f"{self._output_dir}/{self.seed}_pot.json"
+        pickle.dump(self._pot_data, open(self._hash_json_name, "wb"))
+
+    def _hash_model_weights(self):
+        """Calculate MD5 hash of model state_dict incrementally."""
+        hash_md5 = hashlib.md5()
+
+        for param_tensor in self._model.state_dict().values():
+            buffer = pickle.dumps(param_tensor.cpu().numpy())
+
+            hash_md5.update(buffer)
+
+        return hash_md5.hexdigest()
+
+    def _hash_train_data(self):
+        """Calculate MD5 hash of train data."""
+
+        hash_md5 = hashlib.md5()
+
+        for data in self._dataloader.dataset:
+            buffer = pickle.dumps(data.cpu().numpy())
+
+            hash_md5.update(buffer)
+
+        return hash_md5.hexdigest()
+
+    def _save_hash_checkpoint(self, ckpt_dict: dict) -> None:
+        """
+        Hashes the checkpoint dictionary using MD5 and saves it to the PoT file.
+
+        Args:
+            ckpt_dict (dict): The checkpoint dictionary.
+
+        """
+        checkpoint_dict = {
+            "model_checkpoint_md5": self._hash_model_weights(),
+            "optimizer_checkpoint_md5": hashlib.md5(
+                pickle.dumps(ckpt_dict[training.OPT_KEY])
+            ).hexdigest(),
+            "scheduler_checkpoint_md5": hashlib.md5(
+                pickle.dumps(self._lr_scheduler.state_dict())
+            ).hexdigest(),
+        }
+        self._pot_data = pickle.load(open(self._hash_json_name, "rb"))
+        self._pot_data["epochs"][self.epochs_run] = checkpoint_dict
+        pickle.dump(self._pot_data, open(self._hash_json_name, "wb"))
+
     def load_checkpoint(self, cfg_checkpointer: DictConfig) -> Dict[str, Any]:
         """
         Extract the checkpoint state from file and validate. If resume_from_checkpoint
@@ -288,7 +346,9 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
         )
 
         # intel amx
-        self._model, self._optimizer = ipex.optimize(self._model, optimizer=self._optimizer)
+        self._model, self._optimizer = ipex.optimize(
+            self._model, optimizer=self._optimizer
+        )
 
         # initialize loss
         self._loss_fn = config.instantiate(cfg.loss)
@@ -626,6 +686,7 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
             epoch=epoch,
             intermediate_checkpoint=(epoch + 1 < self.total_epochs),
         )
+        self._save_hash_checkpoint(ckpt_dict)
 
     def _loss_step(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         # Shape [b, s], needed for the loss not the model
