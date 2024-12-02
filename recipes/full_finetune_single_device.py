@@ -4,12 +4,14 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+import json
 import pickle
 import sys
 import time
 from functools import partial
 from typing import Any, Dict, Optional, Tuple, Union
 from warnings import warn
+import io
 
 import torch
 from omegaconf import DictConfig, ListConfig
@@ -196,24 +198,35 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
         self.max_steps_per_epoch = cfg.max_steps_per_epoch
         self.global_step = 0
 
+    def initialize_pot_tracking(self) -> None:
+        """
+        Initialize PoT tracking. This method is called after the recipe setup method.
+        """
+
         # Initialize PoT tracking
         self._pot_data = {
-            "random_seed": cfg.seed,
+            "random_seed": self.seed,
             "initial_model_weights_md5": self._hash_model_weights(),
             "train_data_md5": self._hash_train_data(),
             "epochs": {},
         }
         self._hash_json_name = f"{self._output_dir}/{self.seed}_pot.json"
-        pickle.dump(self._pot_data, open(self._hash_json_name, "wb"))
+        # save json
+        with open(self._hash_json_name, "w") as f:
+            json.dump(self._pot_data, f)
+            
 
     def _hash_model_weights(self):
         """Calculate MD5 hash of model state_dict incrementally."""
         hash_md5 = hashlib.md5()
 
         for param_tensor in self._model.state_dict().values():
-            buffer = pickle.dumps(param_tensor.cpu().numpy())
+            # buffer = pickle.dumps(param_tensor.cpu().numpy())
+            # hash_md5.update(buffer)
 
-            hash_md5.update(buffer)
+            buffer = io.BytesIO()
+            torch.save(param_tensor.cpu(), buffer)
+            hash_md5.update(buffer.getvalue())
 
         return hash_md5.hexdigest()
 
@@ -222,10 +235,18 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
 
         hash_md5 = hashlib.md5()
 
-        for data in self._dataloader.dataset:
-            buffer = pickle.dumps(data.cpu().numpy())
+        def serialize_value(value):
+            try:
+                buffer = torch.save(value, buffer=io.BytesIO())
+                return buffer.getvalue()
+            except Exception:
+                try:
+                    return pickle.dumps(value)
+                except Exception:
+                    return str(value).encode()
 
-            hash_md5.update(buffer)
+        for data in self._dataloader:
+            hash_md5.update(serialize_value(data))
 
         return hash_md5.hexdigest()
 
@@ -240,15 +261,15 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
         checkpoint_dict = {
             "model_checkpoint_md5": self._hash_model_weights(),
             "optimizer_checkpoint_md5": hashlib.md5(
-                pickle.dumps(ckpt_dict[training.OPT_KEY])
+                json.dumps(ckpt_dict[training.OPT_KEY])
             ).hexdigest(),
             "scheduler_checkpoint_md5": hashlib.md5(
-                pickle.dumps(self._lr_scheduler.state_dict())
+                json.dumps(self._lr_scheduler.state_dict())
             ).hexdigest(),
         }
-        self._pot_data = pickle.load(open(self._hash_json_name, "rb"))
+        self._pot_data = json.load(open(self._hash_json_name, "rb"))
         self._pot_data["epochs"][self.epochs_run] = checkpoint_dict
-        pickle.dump(self._pot_data, open(self._hash_json_name, "wb"))
+        json.dump(self._pot_data, open(self._hash_json_name, "wb"))
 
     def load_checkpoint(self, cfg_checkpointer: DictConfig) -> Dict[str, Any]:
         """
@@ -862,6 +883,7 @@ def recipe_main(cfg: DictConfig) -> None:
     config.log_config(recipe_name="FullFinetuneRecipeSingleDevice", cfg=cfg)
     recipe = FullFinetuneRecipeSingleDevice(cfg=cfg)
     recipe.setup(cfg=cfg)
+    recipe.initialize_pot_tracking()
     recipe.train()
     recipe.cleanup()
 
