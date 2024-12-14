@@ -214,6 +214,16 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
         # save json
         with open(self._hash_json_name, "w") as f:
             json.dump(self._pot_data, f)
+    
+    def _serialize_value_pytorch(self,value):
+            try:
+                buffer = torch.save(value, buffer=io.BytesIO())
+                return buffer.getvalue()
+            except Exception:
+                try:
+                    return pickle.dumps(value)
+                except Exception:
+                    return str(value).encode()
             
 
     def _hash_model_weights(self):
@@ -235,18 +245,8 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
 
         hash_md5 = hashlib.md5()
 
-        def serialize_value(value):
-            try:
-                buffer = torch.save(value, buffer=io.BytesIO())
-                return buffer.getvalue()
-            except Exception:
-                try:
-                    return pickle.dumps(value)
-                except Exception:
-                    return str(value).encode()
-
         for data in self._dataloader:
-            hash_md5.update(serialize_value(data))
+            hash_md5.update(self._serialize_value_pytorch(data))
 
         return hash_md5.hexdigest()
 
@@ -260,16 +260,15 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
         """
         checkpoint_dict = {
             "model_checkpoint_md5": self._hash_model_weights(),
-            "optimizer_checkpoint_md5": hashlib.md5(
-                json.dumps(ckpt_dict[training.OPT_KEY])
-            ).hexdigest(),
+            "optimizer_checkpoint_md5": 
+            hashlib.md5(self._serialize_value_pytorch(ckpt_dict[training.OPT_KEY])).hexdigest(),
             "scheduler_checkpoint_md5": hashlib.md5(
-                json.dumps(self._lr_scheduler.state_dict())
-            ).hexdigest(),
+            json.dumps(self._lr_scheduler.state_dict()).encode('utf-8')
+        ).hexdigest() if self._lr_scheduler else "",
         }
-        self._pot_data = json.load(open(self._hash_json_name, "rb"))
+        self._pot_data = json.load(open(self._hash_json_name, "r"))
         self._pot_data["epochs"][self.epochs_run] = checkpoint_dict
-        json.dump(self._pot_data, open(self._hash_json_name, "wb"))
+        json.dump(self._pot_data, open(self._hash_json_name, "w"))
 
     def load_checkpoint(self, cfg_checkpointer: DictConfig) -> Dict[str, Any]:
         """
@@ -689,19 +688,19 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
         """
         ckpt_dict = {training.MODEL_KEY: self._model.state_dict()}
         # if training is in-progress, checkpoint the optimizer state as well
-        if epoch + 1 < self.total_epochs:
-            ckpt_dict.update(
-                {
-                    training.SEED_KEY: self.seed,
-                    training.EPOCHS_KEY: self.epochs_run,
-                    training.TOTAL_EPOCHS_KEY: self.total_epochs,
-                    training.MAX_STEPS_KEY: self.max_steps_per_epoch,
-                }
-            )
-            if not self._optimizer_in_bwd:
-                ckpt_dict[training.OPT_KEY] = self._optimizer.state_dict()
-            else:
-                ckpt_dict[training.OPT_KEY] = self._optim_ckpt_wrapper.state_dict()
+        # if epoch + 1 < self.total_epochs:
+        ckpt_dict.update(
+            {
+                training.SEED_KEY: self.seed,
+                training.EPOCHS_KEY: self.epochs_run,
+                training.TOTAL_EPOCHS_KEY: self.total_epochs,
+                training.MAX_STEPS_KEY: self.max_steps_per_epoch,
+            }
+        )
+        if not self._optimizer_in_bwd:
+            ckpt_dict[training.OPT_KEY] = self._optimizer.state_dict()
+        else:
+            ckpt_dict[training.OPT_KEY] = self._optim_ckpt_wrapper.state_dict()
         self._checkpointer.save_checkpoint(
             ckpt_dict,
             epoch=epoch,
