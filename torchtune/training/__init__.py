@@ -45,6 +45,7 @@ from torchtune.training.checkpointing import (
     EPOCHS_KEY,
     FormattedCheckpointFiles,
     FullModelHFCheckpointer,
+    FullModelHFCheckpointerHash,
     FullModelMetaCheckpointer,
     FullModelTorchTuneCheckpointer,
     MAX_STEPS_KEY,
@@ -56,6 +57,7 @@ from torchtune.training.checkpointing import (
     STEPS_KEY,
     TOTAL_EPOCHS_KEY,
     update_state_dict_for_classifier,
+    SCHEDULER_KEY,
 )
 from torchtune.training.lr_schedulers import get_cosine_schedule_with_warmup, get_lr
 from torchtune.training.memory import (
@@ -83,6 +85,7 @@ __all__ = [
     "set_default_dtype",
     "validate_expected_param_dtype",
     "FullModelHFCheckpointer",
+    "FullModelHFCheckpointerHash",
     "FullModelMetaCheckpointer",
     "FullModelTorchTuneCheckpointer",
     "ModelType",
@@ -95,6 +98,7 @@ __all__ = [
     "MODEL_KEY",
     "OPT_KEY",
     "RNG_KEY",
+    "SCHEDULER_KEY",
     "SEED_KEY",
     "STEPS_KEY",
     "TOTAL_EPOCHS_KEY",

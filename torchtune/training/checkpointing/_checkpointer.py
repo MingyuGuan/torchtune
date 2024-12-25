@@ -7,6 +7,9 @@
 import gc
 import json
 import os
+import pickle
+import io
+import hashlib
 
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol, Union
@@ -590,7 +593,17 @@ class FullModelHFCheckpointerHash(_CheckpointerInterface):
                     "If resume_from_checkpoint is True, recipe_checkpoint file must be provided."
                 )
             self._recipe_checkpoint = get_path(self._checkpoint_dir, recipe_checkpoint)
+        self._pot_data = {}
+        
+    def add_training_data_to_pot(self,data_loader):
+        """
+        Add training data to PoT tracking.
+        """
+        self._pot_data["train_data_md5"] = self._hash_train_data(data_loader)
+        with open(self._hash_json_name, "w") as f:
+            json.dump(self._pot_data, f)
 
+    
     def _validate_hf_checkpoint_files(self, checkpoint_files: List[str]) -> List[Path]:
         """
         Validates that the checkpoint files exist and sorts based on ID.
@@ -720,6 +733,68 @@ class FullModelHFCheckpointerHash(_CheckpointerInterface):
             converted_state_dict.update(recipe_state)
         return converted_state_dict
 
+    def _serialize_value_pytorch(self,value):
+            try:
+                buffer = torch.save(value, buffer=io.BytesIO())
+                return buffer.getvalue()
+            except Exception:
+                try:
+                    return pickle.dumps(value)
+                except Exception:
+                    return str(value).encode()
+            
+
+    def _hash_model_weights(self,model_state):
+        """Calculate MD5 hash of model state_dict incrementally."""
+        hash_md5 = hashlib.md5()
+
+        for param_tensor in model_state.values():
+            # buffer = pickle.dumps(param_tensor.cpu().numpy())
+            # hash_md5.update(buffer)
+
+            buffer = io.BytesIO()
+            torch.save(param_tensor.cpu(), buffer)
+            hash_md5.update(buffer.getvalue())
+
+        return hash_md5.hexdigest()
+
+    def add_train_data_pot(self,dataloader):
+        """Calculate MD5 hash of train data."""
+
+        hash_md5 = hashlib.md5()
+
+        for data in dataloader:
+            hash_md5.update(self._serialize_value_pytorch(data))
+
+        self._pot_data["train_data_md5"] = hash_md5.hexdigest()
+
+
+    def _update_epochs_pot(
+        self,
+        state_dict: Dict[str, Any],
+    ):
+        """
+        Hashes the checkpoint dictionary using MD5 and saves it to the PoT file.
+
+        Args:
+            ckpt_dict (dict): The checkpoint dictionary.
+
+        """
+        # self._pot_data = json.load(open(self._hash_json_name, "r"))
+        checkpoint_dict = {
+            "model_checkpoint_md5": self._hash_model_weights(state_dict[training.MODEL_KEY]),
+            "optimizer_checkpoint_md5": 
+            hashlib.md5(self._serialize_value_pytorch(state_dict[training.OPT_KEY])).hexdigest(),
+            "scheduler_checkpoint_md5":  hashlib.md5(
+            json.dumps(state_dict[training.SCHEDULER_KEY]).encode('utf-8')
+        ).hexdigest() if training.SCHEDULER_KEY in state_dict else "",
+        }
+        self._pot_data["epochs"][state_dict[training.EPOCHS_KEY]] = checkpoint_dict
+        # if not "epochs" in self._pot_data:
+        #     self._pot_data["epochs"] = {}
+        json.dump(self._pot_data, open(self._hash_json_name, "w"))
+
+
     def save_checkpoint(
         self,
         state_dict: Dict[str, Any],
@@ -746,6 +821,16 @@ class FullModelHFCheckpointerHash(_CheckpointerInterface):
             ValueError: if ``adapter_only`` is True and adapter checkpoint not found in state_dict.
         """
         self._output_dir.mkdir(exist_ok=True)
+
+        if not all(key in state_dict for key in ["random_seed", "initial_model_weights_md5"]):
+            self._pot_data["random_seed"] = state_dict[training.SEED_KEY]
+            self._pot_data["initial_model_weights_md5"] = self._hash_model_weights(state_dict[training.MODEL_KEY])
+            self._hash_json_name = Path(self._output_dir) / f"{state_dict[training.SEED_KEY]}_pot.json"
+            self._pot_data["epochs"] = {}
+            with open(self._hash_json_name, "w") as f:
+                json.dump(self._pot_data, f)
+
+        self._update_epochs_pot(state_dict)
 
         # convert the state_dict back to hf format; do this inplace
         if not adapter_only:
@@ -913,6 +998,7 @@ class FullModelHFCheckpointerHash(_CheckpointerInterface):
             _ = state_dict.pop(training.MODEL_KEY, None)
             _ = state_dict.pop(training.ADAPTER_KEY, None)
             _ = state_dict.pop(training.ADAPTER_CONFIG, None)
+            _ = state_dict.pop(training.SCHEDULER_KEY, None)
             output_path = Path.joinpath(self._output_dir, "recipe_state.pt")
             torch.save(state_dict, output_path)
             logger.info(

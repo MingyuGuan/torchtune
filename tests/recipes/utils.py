@@ -16,6 +16,7 @@ CKPT_COMPONENT_MAP = {
     "tune": "torchtune.training.FullModelTorchTuneCheckpointer",
     "meta": "torchtune.training.FullModelMetaCheckpointer",
     "hf": "torchtune.training.FullModelHFCheckpointer",
+    "hf_hash": "torchtune.training.FullModelHFCheckpointerHash",
 }
 
 

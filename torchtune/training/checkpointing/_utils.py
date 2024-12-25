@@ -35,6 +35,8 @@ TOTAL_EPOCHS_KEY = "total_epochs"
 STEPS_KEY = "steps_run"
 # rng state for ensuring correct training resuming in PPO
 RNG_KEY = "rng_state"
+# scheduler state
+SCHEDULER_KEY = "scheduler_state"
 
 
 class ModelType(Enum):

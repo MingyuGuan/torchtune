@@ -7,6 +7,7 @@ from typing import Union
 
 from torchtune.training.checkpointing._checkpointer import (
     FullModelHFCheckpointer,
+    FullModelHFCheckpointerHash,
     FullModelMetaCheckpointer,
     FullModelTorchTuneCheckpointer,
 )
@@ -24,10 +25,12 @@ from torchtune.training.checkpointing._utils import (
     STEPS_KEY,
     TOTAL_EPOCHS_KEY,
     update_state_dict_for_classifier,
+    SCHEDULER_KEY
 )
 
 Checkpointer = Union[
     FullModelHFCheckpointer,
+    FullModelHFCheckpointerHash,
     FullModelMetaCheckpointer,
     FullModelTorchTuneCheckpointer,
 ]
@@ -36,6 +39,7 @@ __all__ = [
     "FullModelHFCheckpointer",
     "FullModelMetaCheckpointer",
     "FullModelTorchTuneCheckpointer",
+    "FullModelHFCheckpointerHash",
     "ModelType",
     "Checkpointer",
     "update_state_dict_for_classifier",
@@ -46,6 +50,7 @@ __all__ = [
     "MODEL_KEY",
     "OPT_KEY",
     "RNG_KEY",
+    "SCHEDULER_KEY",
     "SEED_KEY",
     "STEPS_KEY",
     "TOTAL_EPOCHS_KEY",

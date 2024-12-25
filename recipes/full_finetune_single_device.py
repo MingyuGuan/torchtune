@@ -4,20 +4,14 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-import json
-import pickle
 import sys
 import time
 from functools import partial
 from typing import Any, Dict, Optional, Tuple, Union
 from warnings import warn
-import io
 
 import torch
 from omegaconf import DictConfig, ListConfig
-
-
-import hashlib
 
 from torch import nn
 from torch.optim import Optimizer
@@ -198,78 +192,6 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
         self.max_steps_per_epoch = cfg.max_steps_per_epoch
         self.global_step = 0
 
-    def initialize_pot_tracking(self) -> None:
-        """
-        Initialize PoT tracking. This method is called after the recipe setup method.
-        """
-
-        # Initialize PoT tracking
-        self._pot_data = {
-            "random_seed": self.seed,
-            "initial_model_weights_md5": self._hash_model_weights(),
-            "train_data_md5": self._hash_train_data(),
-            "epochs": {},
-        }
-        self._hash_json_name = f"{self._output_dir}/{self.seed}_pot.json"
-        # save json
-        with open(self._hash_json_name, "w") as f:
-            json.dump(self._pot_data, f)
-    
-    def _serialize_value_pytorch(self,value):
-            try:
-                buffer = torch.save(value, buffer=io.BytesIO())
-                return buffer.getvalue()
-            except Exception:
-                try:
-                    return pickle.dumps(value)
-                except Exception:
-                    return str(value).encode()
-            
-
-    def _hash_model_weights(self):
-        """Calculate MD5 hash of model state_dict incrementally."""
-        hash_md5 = hashlib.md5()
-
-        for param_tensor in self._model.state_dict().values():
-            # buffer = pickle.dumps(param_tensor.cpu().numpy())
-            # hash_md5.update(buffer)
-
-            buffer = io.BytesIO()
-            torch.save(param_tensor.cpu(), buffer)
-            hash_md5.update(buffer.getvalue())
-
-        return hash_md5.hexdigest()
-
-    def _hash_train_data(self):
-        """Calculate MD5 hash of train data."""
-
-        hash_md5 = hashlib.md5()
-
-        for data in self._dataloader:
-            hash_md5.update(self._serialize_value_pytorch(data))
-
-        return hash_md5.hexdigest()
-
-    def _save_hash_checkpoint(self, ckpt_dict: dict) -> None:
-        """
-        Hashes the checkpoint dictionary using MD5 and saves it to the PoT file.
-
-        Args:
-            ckpt_dict (dict): The checkpoint dictionary.
-
-        """
-        checkpoint_dict = {
-            "model_checkpoint_md5": self._hash_model_weights(),
-            "optimizer_checkpoint_md5": 
-            hashlib.md5(self._serialize_value_pytorch(ckpt_dict[training.OPT_KEY])).hexdigest(),
-            "scheduler_checkpoint_md5": hashlib.md5(
-            json.dumps(self._lr_scheduler.state_dict()).encode('utf-8')
-        ).hexdigest() if self._lr_scheduler else "",
-        }
-        self._pot_data = json.load(open(self._hash_json_name, "r"))
-        self._pot_data["epochs"][self.epochs_run] = checkpoint_dict
-        json.dump(self._pot_data, open(self._hash_json_name, "w"))
-
     def load_checkpoint(self, cfg_checkpointer: DictConfig) -> Dict[str, Any]:
         """
         Extract the checkpoint state from file and validate. If resume_from_checkpoint
@@ -366,9 +288,7 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
         )
 
         # intel amx
-        self._model, self._optimizer = ipex.optimize(
-            self._model, optimizer=self._optimizer
-        )
+        self._model, self._optimizer = ipex.optimize(self._model, optimizer=self._optimizer)
 
         # initialize loss
         self._loss_fn = config.instantiate(cfg.loss)
@@ -391,6 +311,11 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
             batch_size=cfg.batch_size,
             collate_fn=collate_name,
         )
+
+        if hasattr(self._checkpointer, "add_train_data_pot"):
+            self._checkpointer.add_train_data_pot(
+                dataloader = self._dataloader,
+            )
 
         # Finally update the recipe state which can only be correctly set after all of the
         # other components have been initialized and updated.
@@ -415,6 +340,8 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
             num_training_steps=self.total_epochs * self._steps_per_epoch,
             last_epoch=self.global_step - 1,
         )
+
+        print("self._lr_scheduler: ", self._lr_scheduler.state_dict())
 
         # Set up profiler, returns DummyProfiler (nullcontext object with no-op `step` method)
         # if cfg is missing profiler key or if `cfg.profiler.enabled = False`
@@ -695,6 +622,7 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
                 training.EPOCHS_KEY: self.epochs_run,
                 training.TOTAL_EPOCHS_KEY: self.total_epochs,
                 training.MAX_STEPS_KEY: self.max_steps_per_epoch,
+                training.SCHEDULER_KEY: self._lr_scheduler.state_dict(),
             }
         )
         if not self._optimizer_in_bwd:
@@ -706,7 +634,6 @@ class FullFinetuneRecipeSingleDevice(FTRecipeInterface):
             epoch=epoch,
             intermediate_checkpoint=(epoch + 1 < self.total_epochs),
         )
-        self._save_hash_checkpoint(ckpt_dict)
 
     def _loss_step(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         # Shape [b, s], needed for the loss not the model
@@ -882,7 +809,6 @@ def recipe_main(cfg: DictConfig) -> None:
     config.log_config(recipe_name="FullFinetuneRecipeSingleDevice", cfg=cfg)
     recipe = FullFinetuneRecipeSingleDevice(cfg=cfg)
     recipe.setup(cfg=cfg)
-    recipe.initialize_pot_tracking()
     recipe.train()
     recipe.cleanup()
 
